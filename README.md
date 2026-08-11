@@ -1,4 +1,4 @@
-# Splatter Innovations v1.8.2 — GoDaddy PHP Edition
+# Splatter Innovations v1.8.3 — GoDaddy PHP Edition
 
 This release keeps the v1.8.0 public/admin interface and replaces the Node/Passenger backend with PHP + local JSON storage for standard cPanel hosting.
 
@@ -31,10 +31,14 @@ The deployment backs up `public_html`, preserves `.well-known`, `cgi-bin`, `focu
 Production does not require Node.js, npm, Passenger, or Application Manager.
 
 
-## v1.8.2 upload/API hardening
+## v1.8.3 upload/API hardening
 
 - Bio and project images are resized/compressed in the browser before upload to avoid shared-hosting HTTP 413 limits.
 - Uploads use multipart/form-data instead of base64 JSON, reducing request size.
 - The PHP API remains bundled under `api/` and includes `/api/health`, `/api/meta`, and authenticated `/api/admin/system` diagnostics.
 - Upload and bio/project save errors are caught and displayed instead of becoming unhandled promise errors.
 - Authenticated admin requests report expired sessions clearly.
+
+## v1.8.3 — Brain Splatter manual sync
+
+The Admin Dashboard includes a Brain Splatter Connection card with Configure, Test Connection, and Sync Now controls. Connection credentials are stored server-side in `data/brain-splatter.json` (protected by the data directory `.htaccess`) and are never returned to the browser. Manual sync accepts a JSON feed containing a list directly or under `projects`, `items`, `data`, `results`, `published`, `recipes`, or `proposals`. The default sync mode imports only new records so local Splatter edits are preserved.

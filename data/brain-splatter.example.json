@@ -1,0 +1,11 @@
+{
+  "apiUrl": "https://brain-splatter-ai-backend.rork.app/api/projects",
+  "token": "",
+  "authMode": "bearer",
+  "importNewOnly": true,
+  "status": "not-configured",
+  "lastTestAt": null,
+  "lastSyncAt": null,
+  "lastSync": {"imported": 0, "updated": 0, "skipped": 0, "received": 0},
+  "log": []
+}

@@ -294,3 +294,13 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9998;b
 @media(prefers-reduced-motion:reduce){#app::before,.edge-resync::after,.edge-resync .window-corners,.overlay.modal-visible .modal .detail,.overlay.modal-visible .modal .form-modal,.overlay.modal-visible .modal .login{animation:none!important}}
 
 button:disabled{opacity:.55;cursor:wait;filter:saturate(.45)}
+
+/* v1.8.3 Brain Splatter manual connection */
+.brain-card{margin:0 0 16px;padding:22px 24px;border-color:color-mix(in srgb,var(--cyan) 36%,var(--border));position:relative;overflow:hidden}
+.brain-card::before{content:"LINK//BRAIN-SPLATTER";position:absolute;right:20px;bottom:12px;font:9px var(--mono);letter-spacing:.16em;color:rgba(0,200,244,.28);pointer-events:none}
+.brain-card .panel-head{margin-bottom:14px}.brain-card h2{font:600 22px var(--display-delta);margin:0}.brain-card .panel-head small{color:var(--muted)}
+.brain-status{display:grid;grid-template-columns:1fr .8fr 1.25fr;gap:18px;border-top:1px solid var(--subtle);padding-top:16px}.brain-status>div{display:flex;flex-direction:column;gap:5px}.brain-status small{font:10px var(--mono);text-transform:uppercase;color:var(--dim);letter-spacing:.1em}.brain-status span{color:var(--muted);font-size:12px}.brain-status strong{font:600 15px var(--display)}
+.connection-dot{display:inline-block!important;width:9px;height:9px;border-radius:50%;margin-right:8px;background:var(--dim);box-shadow:0 0 0 3px rgba(255,255,255,.03)}.connection-dot.good{background:#2be96b;box-shadow:0 0 12px rgba(43,233,107,.5)}.connection-dot.bad{background:#ff446b;box-shadow:0 0 12px rgba(255,68,107,.45)}.connection-dot.idle{background:var(--yellow)}
+.brain-url{max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.brain-log ul{list-style:none;margin:0;padding:0}.brain-log li{font-size:11px;color:var(--muted);padding:3px 0}.brain-log li span{display:inline-block;min-width:145px;color:var(--dim);font-family:var(--mono)}
+.form-note{color:var(--muted);line-height:1.5;margin:-8px 0 16px}.checkbox-line{display:flex!important;align-items:center;gap:10px;color:var(--muted)}.checkbox-line input{width:18px;height:18px}
+@media(max-width:900px){.brain-status{grid-template-columns:1fr}.brain-card .panel-head{align-items:flex-start;gap:12px;flex-direction:column}.brain-card .panel-actions{display:flex;flex-wrap:wrap;gap:8px}}

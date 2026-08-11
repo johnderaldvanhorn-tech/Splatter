@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const VERSION = '1.8.2';
+const VERSION = '1.8.3';
 const MAX_JSON_BODY = 15728640; // 15 MB
 const MAX_IMAGE_BYTES = 8388608; // 8 MB server-side hard limit
 
@@ -13,6 +13,7 @@ $PROJECTS_FILE = $DATA . '/projects.json';
 $BIO_FILE = $DATA . '/bio.json';
 $SETTINGS_FILE = $DATA . '/settings.json';
 $USERS_FILE = $DATA . '/users.json';
+$BRAIN_FILE = $DATA . '/brain-splatter.json';
 
 foreach ([$DATA, $BACKUPS, $UPLOADS, "$UPLOADS/projects", "$UPLOADS/bio"] as $dir) {
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
@@ -200,6 +201,190 @@ function parse_ini_bytes(string $value): int {
     };
 }
 
+
+
+function brain_default(): array {
+    return [
+        'apiUrl'=>'',
+        'token'=>'',
+        'authMode'=>'bearer',
+        'importNewOnly'=>true,
+        'status'=>'not-configured',
+        'lastTestAt'=>null,
+        'lastSyncAt'=>null,
+        'lastSync'=>['imported'=>0,'updated'=>0,'skipped'=>0,'received'=>0],
+        'log'=>[]
+    ];
+}
+
+function brain_public_config(array $config): array {
+    $token = (string)($config['token'] ?? '');
+    return [
+        'apiUrl'=>(string)($config['apiUrl'] ?? ''),
+        'authMode'=>(string)($config['authMode'] ?? 'bearer'),
+        'importNewOnly'=>!empty($config['importNewOnly']),
+        'tokenConfigured'=>$token !== '',
+        'tokenHint'=>$token === '' ? '' : ('••••' . substr($token, -4)),
+        'status'=>(string)($config['status'] ?? 'not-configured'),
+        'lastTestAt'=>$config['lastTestAt'] ?? null,
+        'lastSyncAt'=>$config['lastSyncAt'] ?? null,
+        'lastSync'=>is_array($config['lastSync'] ?? null) ? $config['lastSync'] : ['imported'=>0,'updated'=>0,'skipped'=>0,'received'=>0],
+        'log'=>array_slice(is_array($config['log'] ?? null) ? $config['log'] : [], 0, 12)
+    ];
+}
+
+function brain_log(array &$config, string $type, string $message, array $extra = []): void {
+    $entry = array_merge(['time'=>gmdate('c'),'type'=>$type,'message'=>$message], $extra);
+    $log = is_array($config['log'] ?? null) ? $config['log'] : [];
+    array_unshift($log, $entry);
+    $config['log'] = array_slice($log, 0, 30);
+}
+
+function brain_http(array $config): array {
+    $url = trim((string)($config['apiUrl'] ?? ''));
+    if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL)) {
+        throw new RuntimeException('Enter a valid Brain Splatter feed URL.');
+    }
+    $parts = parse_url($url);
+    if (!is_array($parts) || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['https','http'], true)) {
+        throw new RuntimeException('Brain Splatter URL must use HTTPS or HTTP.');
+    }
+    $headers = ['Accept: application/json', 'User-Agent: Splatter-Innovations/1.8.3'];
+    $token = trim((string)($config['token'] ?? ''));
+    $mode = (string)($config['authMode'] ?? 'bearer');
+    if ($token !== '') {
+        if ($mode === 'x-api-key') $headers[] = 'X-API-Key: ' . $token;
+        elseif ($mode === 'token') $headers[] = 'Authorization: Token ' . $token;
+        else $headers[] = 'Authorization: Bearer ' . $token;
+    }
+    $status = 0; $body = ''; $contentType = '';
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>true,CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,CURLOPT_HTTPHEADER=>$headers,CURLOPT_MAXREDIRS=>3]);
+        $raw = curl_exec($ch);
+        if ($raw === false) { $err = curl_error($ch); curl_close($ch); throw new RuntimeException('Brain Splatter connection failed: ' . $err); }
+        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $contentType = (string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+        $body = (string)$raw;
+        curl_close($ch);
+    } else {
+        $ctx = stream_context_create(['http'=>['method'=>'GET','header'=>implode("\r\n", $headers) . "\r\n",'timeout'=>25,'ignore_errors'=>true]]);
+        $raw = @file_get_contents($url, false, $ctx);
+        if ($raw === false) throw new RuntimeException('Brain Splatter connection failed.');
+        $body = (string)$raw;
+        foreach (($http_response_header ?? []) as $line) {
+            if (preg_match('#^HTTP/\\S+\\s+(\\d+)#i', $line, $m)) $status=(int)$m[1];
+            if (stripos($line,'Content-Type:')===0) $contentType=trim(substr($line,13));
+        }
+    }
+    if ($status < 200 || $status >= 300) {
+        $decoded = json_decode($body, true);
+        $msg = is_array($decoded) ? (string)($decoded['error'] ?? $decoded['message'] ?? '') : '';
+        throw new RuntimeException('Brain Splatter returned HTTP ' . $status . ($msg ? ': ' . $msg : '.'));
+    }
+    $decoded = json_decode($body, true);
+    if (!is_array($decoded)) throw new RuntimeException('Brain Splatter did not return JSON.');
+    return ['status'=>$status,'data'=>$decoded,'contentType'=>$contentType];
+}
+
+function brain_items(array $payload): array {
+    if (array_is_list($payload)) return $payload;
+    foreach (['projects','items','data','results','published','recipes','proposals'] as $key) {
+        if (isset($payload[$key]) && is_array($payload[$key])) {
+            $candidate = $payload[$key];
+            if ($key === 'data' && !array_is_list($candidate)) {
+                foreach (['projects','items','results','published','recipes','proposals'] as $nested) if (isset($candidate[$nested]) && is_array($candidate[$nested])) return $candidate[$nested];
+            }
+            if (array_is_list($candidate)) return $candidate;
+        }
+    }
+    throw new RuntimeException('Brain Splatter response does not contain a project list.');
+}
+
+function brain_pick(array $item, array $keys, mixed $default=''): mixed {
+    foreach ($keys as $key) if (array_key_exists($key, $item) && $item[$key] !== null && $item[$key] !== '') return $item[$key];
+    return $default;
+}
+
+function brain_project(array $item, int $index): array {
+    $remoteId = (string)brain_pick($item, ['id','projectId','project_id','uuid','recipeId','proposalId'], '');
+    $title = trim((string)brain_pick($item, ['title','name','projectName','project_name','recipeName','proposalName'], 'Brain Splatter Project'));
+    $desc = (string)brain_pick($item, ['description','details','body','content','summary','proposal','recipe'], '');
+    $short = (string)brain_pick($item, ['shortDescription','short_description','summary','subtitle'], '');
+    if ($short === '') $short = mb_substr(trim(strip_tags($desc)), 0, 180);
+    $categoryRaw = strtolower((string)brain_pick($item, ['category','type','projectType'], 'research'));
+    $allowed = ['hardware','software','systems','tools','research'];
+    $category = in_array($categoryRaw, $allowed, true) ? $categoryRaw : (str_contains($categoryRaw,'soft')?'software':(str_contains($categoryRaw,'hard')?'hardware':'research'));
+    $statusRaw = strtolower(str_replace(' ', '-', (string)brain_pick($item, ['status','phase'], 'active')));
+    $allowedStatus=['concept','research','build','in-progress','active','complete','archived'];
+    $status=in_array($statusRaw,$allowedStatus,true)?$statusRaw:'active';
+    $tags=brain_pick($item,['tags','labels'],[]);
+    if (is_string($tags)) $tags=array_values(array_filter(array_map('trim',explode(',',$tags))));
+    if (!is_array($tags)) $tags=[];
+    $image=(string)brain_pick($item,['heroImage','hero_image','image','imageUrl','image_url','thumbnail','thumbnailUrl'], '/assets/edge-node.webp');
+    $started=(string)brain_pick($item,['startedAt','started_at','createdAt','created_at','date'], gmdate('Y-m-d'));
+    if (strlen($started)>10) $started=substr($started,0,10);
+    return [
+        'brainSplatterId'=>$remoteId !== '' ? $remoteId : ('slug:' . slugify($title)),
+        'source'=>'brain-splatter',
+        'sourceUrl'=>(string)brain_pick($item,['url','webUrl','projectUrl','link'],''),
+        'title'=>$title,
+        'category'=>$category,
+        'status'=>$status,
+        'accent'=>$category==='software'?'cyan':($category==='systems'?'yellow':'magenta'),
+        'shortDescription'=>$short,
+        'description'=>$desc,
+        'startedAt'=>$started,
+        'phase'=>(string)brain_pick($item,['phase'], $status),
+        'tags'=>array_values(array_map('strval',$tags)),
+        'heroImage'=>$image,
+        'gallery'=>[],
+        'youtubeUrl'=>(string)brain_pick($item,['youtubeUrl','youtube_url','videoUrl','video_url'],''),
+        'featured'=>!empty($item['featured']),
+        'published'=>true,
+        'brainSplatterSyncedAt'=>gmdate('c'),
+        '_remoteIndex'=>$index
+    ];
+}
+
+function brain_sync_projects(array &$config): array {
+    global $PROJECTS_FILE;
+    $response=brain_http($config);
+    $items=brain_items($response['data']);
+    $projects=read_json_file($PROJECTS_FILE, []);
+    if (!is_array($projects)) $projects=[];
+    $imported=0; $updated=0; $skipped=0;
+    foreach ($items as $ri=>$raw) {
+        if (!is_array($raw)) { $skipped++; continue; }
+        $remote=brain_project($raw,(int)$ri);
+        $remoteKey=(string)$remote['brainSplatterId'];
+        $match=null;
+        foreach ($projects as $i=>$local) {
+            if (($local['source']??'')==='brain-splatter' && (string)($local['brainSplatterId']??'')===$remoteKey) { $match=$i; break; }
+        }
+        if ($match===null) {
+            $max=0; foreach($projects as $x)$max=max($max,(int)preg_replace('/\\D+/','',(string)($x['id']??'0')));
+            unset($remote['_remoteIndex']);
+            $remote['id']='p-' . str_pad((string)($max+1),2,'0',STR_PAD_LEFT);
+            $remote['slug']=slugify($remote['title']);
+            $remote['updatedAt']=gmdate('c');
+            $remote['displayOrder']=count($projects)+1;
+            $projects[]=$remote; $imported++;
+        } elseif (!empty($config['importNewOnly'])) {
+            $skipped++;
+        } else {
+            unset($remote['_remoteIndex']);
+            $preserve=['id','slug','displayOrder','published'];
+            $existing=$projects[$match];
+            $projects[$match]=array_merge($existing,$remote,['updatedAt'=>gmdate('c')]);
+            foreach($preserve as $key) if(array_key_exists($key,$existing))$projects[$match][$key]=$existing[$key];
+            $updated++;
+        }
+    }
+    atomic_write_json($PROJECTS_FILE,$projects);
+    return ['received'=>count($items),'imported'=>$imported,'updated'=>$updated,'skipped'=>$skipped];
+}
+
 function settings_default(): array {
     return ['siteName'=>'Splatter Innovations','tagline'=>'Splatter. Storm and Bake.','established'=>'2024','storageMode'=>'local-json-php'];
 }
@@ -217,8 +402,69 @@ try {
             'name'=>'Splatter Innovations API',
             'version'=>VERSION,
             'runtime'=>'php',
-            'endpoints'=>['health','meta','projects','bio','settings','auth/session','auth/login']
+            'endpoints'=>['health','meta','projects','bio','settings','auth/session','auth/login','admin/brain-splatter','admin/brain-splatter/test','admin/brain-splatter/sync']
         ]);
+    }
+
+
+    if ($route === 'admin/brain-splatter' && $method === 'GET') {
+        require_auth();
+        $config = array_merge(brain_default(), read_json_file($BRAIN_FILE, []));
+        send_json(200, brain_public_config($config));
+    }
+
+    if ($route === 'admin/brain-splatter' && $method === 'PUT') {
+        require_auth();
+        $existing = array_merge(brain_default(), read_json_file($BRAIN_FILE, []));
+        $b = request_body();
+        if (array_key_exists('apiUrl', $b)) $existing['apiUrl'] = trim((string)$b['apiUrl']);
+        if (array_key_exists('authMode', $b)) $existing['authMode'] = in_array((string)$b['authMode'], ['bearer','x-api-key','token'], true) ? (string)$b['authMode'] : 'bearer';
+        if (array_key_exists('importNewOnly', $b)) $existing['importNewOnly'] = (bool)$b['importNewOnly'];
+        if (isset($b['token']) && trim((string)$b['token']) !== '') $existing['token'] = trim((string)$b['token']);
+        if (!empty($b['clearToken'])) $existing['token'] = '';
+        $existing['status'] = $existing['apiUrl'] === '' ? 'not-configured' : 'configured';
+        brain_log($existing, 'config', 'Brain Splatter settings updated.');
+        atomic_write_json($BRAIN_FILE, $existing);
+        send_json(200, brain_public_config($existing));
+    }
+
+    if ($route === 'admin/brain-splatter/test' && $method === 'POST') {
+        require_auth();
+        $config = array_merge(brain_default(), read_json_file($BRAIN_FILE, []));
+        try {
+            $response = brain_http($config);
+            $items = brain_items($response['data']);
+            $config['status'] = 'connected';
+            $config['lastTestAt'] = gmdate('c');
+            brain_log($config, 'success', 'Connection test successful.', ['received'=>count($items)]);
+            atomic_write_json($BRAIN_FILE, $config);
+            send_json(200, ['ok'=>true,'status'=>'connected','received'=>count($items),'config'=>brain_public_config($config)]);
+        } catch (Throwable $e) {
+            $config['status'] = 'error';
+            $config['lastTestAt'] = gmdate('c');
+            brain_log($config, 'error', $e->getMessage());
+            atomic_write_json($BRAIN_FILE, $config);
+            send_json(502, ['error'=>$e->getMessage(),'config'=>brain_public_config($config)]);
+        }
+    }
+
+    if ($route === 'admin/brain-splatter/sync' && $method === 'POST') {
+        require_auth();
+        $config = array_merge(brain_default(), read_json_file($BRAIN_FILE, []));
+        try {
+            $result = brain_sync_projects($config);
+            $config['status'] = 'connected';
+            $config['lastSyncAt'] = gmdate('c');
+            $config['lastSync'] = $result;
+            brain_log($config, 'sync', 'Manual sync completed.', $result);
+            atomic_write_json($BRAIN_FILE, $config);
+            send_json(200, ['ok'=>true,'result'=>$result,'config'=>brain_public_config($config)]);
+        } catch (Throwable $e) {
+            $config['status'] = 'error';
+            brain_log($config, 'error', 'Sync failed: ' . $e->getMessage());
+            atomic_write_json($BRAIN_FILE, $config);
+            send_json(502, ['error'=>$e->getMessage(),'config'=>brain_public_config($config)]);
+        }
     }
 
     if ($route === 'admin/system' && $method === 'GET') {

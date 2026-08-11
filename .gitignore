@@ -8,8 +8,4 @@ uploads/*
 !uploads/bio/
 data/users.json
 
-# Runtime/private files
-.splatter.pid
-data/.session-secret
-data/users.json
-public/uploads/
+data/brain-splatter.json
