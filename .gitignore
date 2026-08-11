@@ -1,0 +1,13 @@
+node_modules/
+.DS_Store
+.env
+*.log
+
+.splatter.pid
+logs/
+backups/
+
+data/.session-secret
+data/users.json
+
+public/uploads/

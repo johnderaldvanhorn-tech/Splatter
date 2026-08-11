@@ -1,0 +1,13 @@
+{
+  "name": "splatter-innovations",
+  "version": "1.8.0",
+  "private": true,
+  "description": "Self-hosted Splatter Innovations portfolio and admin CMS \u2014 v1.8.0 cinematic Delta Ray and enhanced glitch release",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
