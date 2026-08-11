@@ -295,7 +295,7 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9998;b
 
 button:disabled{opacity:.55;cursor:wait;filter:saturate(.45)}
 
-/* v1.8.3 Brain Splatter manual connection */
+/* v1.8.4 Brain Splatter manual connection */
 .brain-card{margin:0 0 16px;padding:22px 24px;border-color:color-mix(in srgb,var(--cyan) 36%,var(--border));position:relative;overflow:hidden}
 .brain-card::before{content:"LINK//BRAIN-SPLATTER";position:absolute;right:20px;bottom:12px;font:9px var(--mono);letter-spacing:.16em;color:rgba(0,200,244,.28);pointer-events:none}
 .brain-card .panel-head{margin-bottom:14px}.brain-card h2{font:600 22px var(--display-delta);margin:0}.brain-card .panel-head small{color:var(--muted)}
