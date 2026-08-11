@@ -27,7 +27,9 @@ jobs:
             --exclude='data/.session-secret' \
             --exclude='data/users.json' \
             --exclude='public/uploads' \
-            -czf splatter-deploy.tar.gz .
+            -czf /tmp/splatter-deploy.tar.gz .
+
+          mv /tmp/splatter-deploy.tar.gz ./splatter-deploy.tar.gz
 
       - name: Upload deployment package
         uses: appleboy/scp-action@v1
