@@ -19,23 +19,63 @@ jobs:
 
       - name: Validate deployment secrets
         shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+          GODADDY_SSH_KEY: ${{ secrets.GODADDY_SSH_KEY }}
         run: |
-          if [ -z "${{ secrets.GODADDY_HOST }}" ]; then
+          set -e
+
+          if [ -z "$GODADDY_HOST" ]; then
             echo "ERROR: GODADDY_HOST is missing"
             exit 1
           fi
 
-          if [ -z "${{ secrets.GODADDY_USERNAME }}" ]; then
+          if [ -z "$GODADDY_USERNAME" ]; then
             echo "ERROR: GODADDY_USERNAME is missing"
             exit 1
           fi
 
-          if [ -z "${{ secrets.GODADDY_SSH_KEY }}" ]; then
+          if [ -z "$GODADDY_SSH_KEY" ]; then
             echo "ERROR: GODADDY_SSH_KEY is missing"
             exit 1
           fi
 
           echo "GoDaddy deployment secrets are available."
+
+      - name: Configure SSH
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_SSH_KEY: ${{ secrets.GODADDY_SSH_KEY }}
+        run: |
+          set -e
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+
+          printf '%s\n' "$GODADDY_SSH_KEY" > "$HOME/.ssh/splatter_godaddy"
+          chmod 600 "$HOME/.ssh/splatter_godaddy"
+
+          ssh-keyscan -H "$GODADDY_HOST" >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          echo "SSH configured."
+
+      - name: Test SSH connection
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+        run: |
+          set -e
+
+          ssh \
+            -i "$HOME/.ssh/splatter_godaddy" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$GODADDY_USERNAME@$GODADDY_HOST" \
+            'echo "SSH connection successful."'
 
       - name: Prepare deployment package
         shell: bash
@@ -60,130 +100,167 @@ jobs:
           ls -lh splatter-deploy.tar.gz
 
       - name: Upload deployment package
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.GODADDY_HOST }}
-          username: ${{ secrets.GODADDY_USERNAME }}
-          key: ${{ secrets.GODADDY_SSH_KEY }}
-          source: splatter-deploy.tar.gz
-          target: /home/${{ secrets.GODADDY_USERNAME }}/
-          overwrite: true
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+        run: |
+          set -e
+
+          echo "Uploading deployment package..."
+
+          scp \
+            -i "$HOME/.ssh/splatter_godaddy" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=30 \
+            splatter-deploy.tar.gz \
+            "$GODADDY_USERNAME@$GODADDY_HOST:/home/$GODADDY_USERNAME/splatter-deploy.tar.gz"
+
+          echo "Upload complete."
 
       - name: Deploy and restart Passenger
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.GODADDY_HOST }}
-          username: ${{ secrets.GODADDY_USERNAME }}
-          key: ${{ secrets.GODADDY_SSH_KEY }}
-          script: |
-            set -e
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+        run: |
+          set -e
 
-            APP="$HOME/splatter-app"
-            PACKAGE="$HOME/splatter-deploy.tar.gz"
-            BACKUP_ROOT="$HOME/splatter-backups"
-            PERSIST="$HOME/splatter-persistent"
-            BACKUP="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
+          ssh \
+            -i "$HOME/.ssh/splatter_godaddy" \
+            -o BatchMode=yes \
+            "$GODADDY_USERNAME@$GODADDY_HOST" 'bash -s' <<'REMOTE'
+          set -e
 
-            echo "=== Splatter Deployment ==="
-            echo "Home: $HOME"
-            echo "App:  $APP"
+          APP="$HOME/splatter-app"
+          PACKAGE="$HOME/splatter-deploy.tar.gz"
+          BACKUP_ROOT="$HOME/splatter-backups"
+          PERSIST="$HOME/splatter-persistent"
+          BACKUP="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
 
-            mkdir -p "$APP"
-            mkdir -p "$BACKUP_ROOT"
-            mkdir -p "$PERSIST"
+          echo "=== Splatter Deployment ==="
+          echo "Home: $HOME"
+          echo "App:  $APP"
 
-            echo "Backing up existing application..."
+          mkdir -p "$APP"
+          mkdir -p "$BACKUP_ROOT"
+          mkdir -p "$PERSIST"
 
-            if [ -f "$APP/package.json" ]; then
-              mkdir -p "$BACKUP"
-              cp -R "$APP" "$BACKUP/app"
-            fi
+          if [ ! -f "$PACKAGE" ]; then
+            echo "ERROR: Deployment package was not found."
+            exit 1
+          fi
 
-            echo "Preserving live project data..."
+          echo "Backing up existing application..."
 
-            if [ -f "$APP/data/projects.json" ]; then
-              cp "$APP/data/projects.json" "$PERSIST/projects.json"
-            fi
+          if [ -f "$APP/package.json" ]; then
+            mkdir -p "$BACKUP"
+            cp -R "$APP" "$BACKUP/app"
+          fi
 
-            if [ -f "$APP/data/bio.json" ]; then
-              cp "$APP/data/bio.json" "$PERSIST/bio.json"
-            fi
+          echo "Preserving live project data..."
 
-            if [ -f "$APP/data/settings.json" ]; then
-              cp "$APP/data/settings.json" "$PERSIST/settings.json"
-            fi
+          if [ -f "$APP/data/projects.json" ]; then
+            cp "$APP/data/projects.json" "$PERSIST/projects.json"
+          fi
 
-            if [ -f "$APP/data/users.json" ]; then
-              cp "$APP/data/users.json" "$PERSIST/users.json"
-            fi
+          if [ -f "$APP/data/bio.json" ]; then
+            cp "$APP/data/bio.json" "$PERSIST/bio.json"
+          fi
 
-            if [ -f "$APP/data/.session-secret" ]; then
-              cp "$APP/data/.session-secret" "$PERSIST/.session-secret"
-            fi
+          if [ -f "$APP/data/settings.json" ]; then
+            cp "$APP/data/settings.json" "$PERSIST/settings.json"
+          fi
 
-            if [ -d "$APP/public/uploads" ]; then
-              rm -rf "$PERSIST/uploads"
-              cp -R "$APP/public/uploads" "$PERSIST/uploads"
-            fi
+          if [ -f "$APP/data/users.json" ]; then
+            cp "$APP/data/users.json" "$PERSIST/users.json"
+          fi
 
-            echo "Removing previous application code..."
+          if [ -f "$APP/data/.session-secret" ]; then
+            cp "$APP/data/.session-secret" "$PERSIST/.session-secret"
+          fi
 
-            find "$APP" \
+          if [ -d "$APP/public/uploads" ]; then
+            rm -rf "$PERSIST/uploads"
+            cp -R "$APP/public/uploads" "$PERSIST/uploads"
+          fi
+
+          echo "Removing previous application code..."
+
+          find "$APP" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            ! -name data \
+            ! -name public \
+            -exec rm -rf {} +
+
+          if [ -d "$APP/public" ]; then
+            find "$APP/public" \
               -mindepth 1 \
               -maxdepth 1 \
-              ! -name data \
-              ! -name public \
+              ! -name uploads \
               -exec rm -rf {} +
+          fi
 
-            if [ -d "$APP/public" ]; then
-              find "$APP/public" \
-                -mindepth 1 \
-                -maxdepth 1 \
-                ! -name uploads \
-                -exec rm -rf {} +
-            fi
+          echo "Extracting new release..."
 
-            echo "Extracting new release..."
+          tar -xzf "$PACKAGE" -C "$APP"
 
-            tar -xzf "$PACKAGE" -C "$APP"
+          echo "Restoring persistent data..."
 
-            echo "Restoring persistent data..."
+          mkdir -p "$APP/data"
 
-            mkdir -p "$APP/data"
+          [ -f "$PERSIST/projects.json" ] && \
+            cp "$PERSIST/projects.json" "$APP/data/projects.json"
 
-            [ -f "$PERSIST/projects.json" ] && \
-              cp "$PERSIST/projects.json" "$APP/data/projects.json"
+          [ -f "$PERSIST/bio.json" ] && \
+            cp "$PERSIST/bio.json" "$APP/data/bio.json"
 
-            [ -f "$PERSIST/bio.json" ] && \
-              cp "$PERSIST/bio.json" "$APP/data/bio.json"
+          [ -f "$PERSIST/settings.json" ] && \
+            cp "$PERSIST/settings.json" "$APP/data/settings.json"
 
-            [ -f "$PERSIST/settings.json" ] && \
-              cp "$PERSIST/settings.json" "$APP/data/settings.json"
+          [ -f "$PERSIST/users.json" ] && \
+            cp "$PERSIST/users.json" "$APP/data/users.json"
 
-            [ -f "$PERSIST/users.json" ] && \
-              cp "$PERSIST/users.json" "$APP/data/users.json"
+          [ -f "$PERSIST/.session-secret" ] && \
+            cp "$PERSIST/.session-secret" "$APP/data/.session-secret"
 
-            [ -f "$PERSIST/.session-secret" ] && \
-              cp "$PERSIST/.session-secret" "$APP/data/.session-secret"
+          if [ -d "$PERSIST/uploads" ]; then
+            rm -rf "$APP/public/uploads"
+            cp -R "$PERSIST/uploads" "$APP/public/uploads"
+          fi
 
-            if [ -d "$PERSIST/uploads" ]; then
-              rm -rf "$APP/public/uploads"
-              cp -R "$PERSIST/uploads" "$APP/public/uploads"
-            fi
+          cd "$APP"
 
-            cd "$APP"
+          echo "Installing Node dependencies..."
 
-            echo "Installing Node dependencies..."
+          npm ci --omit=dev
 
-            npm ci --omit=dev
+          echo "Restarting Passenger..."
 
-            echo "Restarting Passenger..."
+          mkdir -p tmp
+          touch tmp/restart.txt
 
-            mkdir -p tmp
-            touch tmp/restart.txt
+          echo "Cleaning temporary deployment package..."
 
-            echo "Cleaning temporary deployment package..."
+          rm -f "$PACKAGE"
 
-            rm -f "$PACKAGE"
+          echo "Deployment completed successfully."
+          REMOTE
 
-            echo "Deployment completed successfully."
+      - name: Verify deployed files
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+        run: |
+          set -e
+
+          ssh \
+            -i "$HOME/.ssh/splatter_godaddy" \
+            -o BatchMode=yes \
+            "$GODADDY_USERNAME@$GODADDY_HOST" \
+            'test -f "$HOME/splatter-app/server.js" &&
+             test -f "$HOME/splatter-app/package.json" &&
+             test -f "$HOME/splatter-app/public/index.html" &&
+             echo "Splatter deployment files verified."'
