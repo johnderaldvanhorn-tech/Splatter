@@ -1,4 +1,4 @@
-# Splatter Innovations v1.8.5 — GoDaddy PHP Edition
+# Splatter Innovations v1.8.6 — GoDaddy PHP Edition
 
 This release keeps the v1.8.0 public/admin interface and replaces the Node/Passenger backend with PHP + local JSON storage for standard cPanel hosting.
 
@@ -52,3 +52,13 @@ The Admin Dashboard includes a Brain Splatter Connection card with Configure, Te
 - **Test Sync** and **Sync Now** stay disabled until a read/GET endpoint is configured.
 - Manual sync still imports only new Brain Splatter projects by default and preserves local edits.
 - Existing v1.8.3 `apiUrl` settings are migrated automatically into the new `syncUrl` field.
+
+
+## v1.8.6 — Restore original Brain Splatter portfolio connection
+
+- Restores the original Brain Splatter backend model used before the PHP migration.
+- Uses one configured Brain Splatter endpoint plus the Brain Splatter/Supabase User ID.
+- Accepts the existing intake URL and automatically derives the backend origin.
+- Manual **Test Connection** reads `/api/portfolio/projects?user_id=...`.
+- Manual **Sync Now** pulls published Brain Splatter projects into the local Splatter JSON database.
+- Existing v1.8.3-v1.8.5 Brain Splatter settings are migrated automatically where possible.

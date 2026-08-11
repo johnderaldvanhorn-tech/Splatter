@@ -1,13 +1,9 @@
 {
-  "intakeUrl": "https://brain-splatter-ai-backend.rork.app/api/idea-capture/intake",
-  "syncUrl": "",
-  "token": "",
-  "authMode": "bearer",
+  "endpointUrl": "https://brain-splatter-ai-backend.rork.app/api/idea-capture/intake",
+  "userId": "",
   "importNewOnly": true,
-  "intakeStatus": "not-tested",
-  "syncStatus": "not-configured",
-  "lastIntakeTestAt": null,
-  "lastSyncTestAt": null,
+  "status": "not-tested",
+  "lastTestAt": null,
   "lastSyncAt": null,
   "lastSync": {"imported": 0, "updated": 0, "skipped": 0, "received": 0},
   "log": []

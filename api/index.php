@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const VERSION = '1.8.4';
+const VERSION = '1.8.6';
 const MAX_JSON_BODY = 15728640; // 15 MB
 const MAX_IMAGE_BYTES = 8388608; // 8 MB server-side hard limit
 
@@ -205,50 +205,71 @@ function parse_ini_bytes(string $value): int {
 
 function brain_default(): array {
     return [
-        'intakeUrl'=>'https://brain-splatter-ai-backend.rork.app/api/idea-capture/intake',
-        'syncUrl'=>'',
+        'endpointUrl'=>'https://brain-splatter-ai-backend.rork.app/api/idea-capture/intake',
+        'userId'=>'',
         'token'=>'',
         'authMode'=>'bearer',
         'importNewOnly'=>true,
-        'intakeStatus'=>'not-tested',
-        'syncStatus'=>'not-configured',
-        'status'=>'not-configured',
-        'lastIntakeTestAt'=>null,
-        'lastSyncTestAt'=>null,
+        'status'=>'not-tested',
+        'lastTestAt'=>null,
         'lastSyncAt'=>null,
         'lastSync'=>['imported'=>0,'updated'=>0,'skipped'=>0,'received'=>0],
         'log'=>[]
     ];
 }
 
+function brain_base_url(string $url): string {
+    $url = trim($url);
+    if ($url === '') return '';
+    $parts = parse_url($url);
+    if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) return $url;
+    $base = strtolower((string)$parts['scheme']) . '://' . $parts['host'];
+    if (!empty($parts['port'])) $base .= ':' . (int)$parts['port'];
+    return $base;
+}
+
 function brain_normalize_config(array $config): array {
+    global $SETTINGS_FILE;
     $defaults = brain_default();
     $config = array_merge($defaults, $config);
-    // v1.8.3 migration: the old apiUrl represented the GET project feed.
-    if (trim((string)($config['syncUrl'] ?? '')) === '' && trim((string)($config['apiUrl'] ?? '')) !== '') {
-        $config['syncUrl'] = trim((string)$config['apiUrl']);
+
+    // Restore the original Splatter/Brain Splatter connection model used before the PHP migration.
+    // v1.8.3-v1.8.5 stored separate intake/sync URLs; collapse either one back to a single endpoint.
+    if (trim((string)($config['endpointUrl'] ?? '')) === '') {
+        $legacy = trim((string)($config['intakeUrl'] ?? ''));
+        if ($legacy === '') $legacy = trim((string)($config['syncUrl'] ?? ''));
+        if ($legacy === '') $legacy = trim((string)($config['apiUrl'] ?? ''));
+        if ($legacy !== '') $config['endpointUrl'] = $legacy;
     }
-    unset($config['apiUrl']);
-    if (trim((string)$config['syncUrl']) === '') $config['syncStatus'] = 'not-configured';
-    $config['status'] = $config['syncStatus'] === 'connected' ? 'connected' : (($config['intakeStatus'] ?? '') === 'reachable' ? 'intake-ready' : ($config['syncUrl'] === '' ? 'configured' : ($config['syncStatus'] ?? 'configured')));
+
+    // Older releases stored the Brain Splatter Supabase user UUID in settings.json.
+    if (trim((string)($config['userId'] ?? '')) === '') {
+        $settings = read_json_file($SETTINGS_FILE, []);
+        if (is_array($settings) && trim((string)($settings['brainSplatterUserId'] ?? '')) !== '') {
+            $config['userId'] = trim((string)$settings['brainSplatterUserId']);
+        }
+    }
+
+    unset($config['intakeUrl'], $config['syncUrl'], $config['apiUrl'], $config['intakeStatus'], $config['syncStatus'], $config['lastIntakeTestAt'], $config['lastSyncTestAt']);
+    if (trim((string)$config['endpointUrl']) === '' || trim((string)$config['userId']) === '') {
+        $config['status'] = 'not-configured';
+    }
     return $config;
 }
 
 function brain_public_config(array $config): array {
     $config = brain_normalize_config($config);
     $token = (string)($config['token'] ?? '');
+    $uid = (string)($config['userId'] ?? '');
     return [
-        'intakeUrl'=>(string)($config['intakeUrl'] ?? ''),
-        'syncUrl'=>(string)($config['syncUrl'] ?? ''),
-        'authMode'=>(string)($config['authMode'] ?? 'bearer'),
+        'endpointUrl'=>(string)($config['endpointUrl'] ?? ''),
+        'userId'=>$uid,
+        'userIdHint'=>$uid === '' ? '' : (substr($uid, 0, 8) . (strlen($uid) > 8 ? '…' : '')),
         'importNewOnly'=>!empty($config['importNewOnly']),
         'tokenConfigured'=>$token !== '',
         'tokenHint'=>$token === '' ? '' : ('••••' . substr($token, -4)),
         'status'=>(string)($config['status'] ?? 'not-configured'),
-        'intakeStatus'=>(string)($config['intakeStatus'] ?? 'not-tested'),
-        'syncStatus'=>(string)($config['syncStatus'] ?? 'not-configured'),
-        'lastIntakeTestAt'=>$config['lastIntakeTestAt'] ?? null,
-        'lastSyncTestAt'=>$config['lastSyncTestAt'] ?? null,
+        'lastTestAt'=>$config['lastTestAt'] ?? null,
         'lastSyncAt'=>$config['lastSyncAt'] ?? null,
         'lastSync'=>is_array($config['lastSync'] ?? null) ? $config['lastSync'] : ['imported'=>0,'updated'=>0,'skipped'=>0,'received'=>0],
         'log'=>array_slice(is_array($config['log'] ?? null) ? $config['log'] : [], 0, 12)
@@ -262,16 +283,16 @@ function brain_log(array &$config, string $type, string $message, array $extra =
     $config['log'] = array_slice($log, 0, 30);
 }
 
-function brain_validate_url(string $url, string $label): string {
+function brain_validate_url(string $url): string {
     $url = trim($url);
-    if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL)) throw new RuntimeException("Enter a valid Brain Splatter $label URL.");
+    if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL)) throw new RuntimeException('Enter a valid Brain Splatter endpoint URL.');
     $parts = parse_url($url);
-    if (!is_array($parts) || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['https','http'], true)) throw new RuntimeException("Brain Splatter $label URL must use HTTPS or HTTP.");
+    if (!is_array($parts) || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['https','http'], true)) throw new RuntimeException('Brain Splatter endpoint must use HTTPS or HTTP.');
     return $url;
 }
 
 function brain_headers(array $config): array {
-    $headers = ['Accept: application/json', 'User-Agent: Splatter-Innovations/1.8.4'];
+    $headers = ['Accept: application/json', 'User-Agent: Splatter-Innovations/1.8.6'];
     $token = trim((string)($config['token'] ?? ''));
     $mode = (string)($config['authMode'] ?? 'bearer');
     if ($token !== '') {
@@ -282,25 +303,28 @@ function brain_headers(array $config): array {
     return $headers;
 }
 
-function brain_request(array $config, string $url, string $method='GET', bool $expectJson=false, bool $followRedirects=true, string $purpose='auto'): array {
-    $validationPurpose = $purpose === 'auto' ? (strtolower($method)==='get' && $expectJson ? 'sync' : 'intake') : $purpose;
-    $url = brain_validate_url($url, $validationPurpose);
+function brain_request(array $config, string $url): array {
+    $url = brain_validate_url($url);
     $headers = brain_headers($config);
-    $status = 0; $body = ''; $contentType = ''; $redirectUrl = '';
+    $status = 0; $body = ''; $contentType = '';
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
-        $opts=[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>$followRedirects,CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,CURLOPT_HTTPHEADER=>$headers,CURLOPT_MAXREDIRS=>3,CURLOPT_CUSTOMREQUEST=>$method];
-        if ($method === 'HEAD') { $opts[CURLOPT_NOBODY]=true; }
-        curl_setopt_array($ch, $opts);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER=>true,
+            CURLOPT_FOLLOWLOCATION=>false,
+            CURLOPT_CONNECTTIMEOUT=>10,
+            CURLOPT_TIMEOUT=>25,
+            CURLOPT_HTTPHEADER=>$headers,
+            CURLOPT_CUSTOMREQUEST=>'GET'
+        ]);
         $raw = curl_exec($ch);
         if ($raw === false) { $err = curl_error($ch); curl_close($ch); throw new RuntimeException('Brain Splatter connection failed: ' . $err); }
         $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $contentType = (string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-        $redirectUrl = (string)curl_getinfo($ch, CURLINFO_REDIRECT_URL);
         $body = (string)$raw;
         curl_close($ch);
     } else {
-        $ctx = stream_context_create(['http'=>['method'=>$method,'header'=>implode("\r\n", $headers) . "\r\n",'timeout'=>25,'ignore_errors'=>true]]);
+        $ctx = stream_context_create(['http'=>['method'=>'GET','header'=>implode("\r\n", $headers) . "\r\n",'timeout'=>25,'ignore_errors'=>true,'follow_location'=>0]]);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false && empty($http_response_header)) throw new RuntimeException('Brain Splatter connection failed.');
         $body = $raw === false ? '' : (string)$raw;
@@ -309,53 +333,34 @@ function brain_request(array $config, string $url, string $method='GET', bool $e
             if (stripos($line,'Content-Type:')===0) $contentType=trim(substr($line,13));
         }
     }
-    if ($expectJson) {
-        if ($status < 200 || $status >= 300) {
-            $decoded = json_decode($body, true);
-            $msg = is_array($decoded) ? (string)($decoded['error'] ?? $decoded['message'] ?? '') : '';
-            throw new RuntimeException('Brain Splatter returned HTTP ' . $status . ($msg ? ': ' . $msg : '.'));
-        }
+    if ($status < 200 || $status >= 300) {
         $decoded = json_decode($body, true);
-        if (!is_array($decoded)) throw new RuntimeException('Brain Splatter sync endpoint did not return JSON.');
-        return ['status'=>$status,'data'=>$decoded,'contentType'=>$contentType];
+        $msg = is_array($decoded) ? (string)($decoded['error'] ?? $decoded['message'] ?? '') : '';
+        throw new RuntimeException('Brain Splatter returned HTTP ' . $status . ($msg ? ': ' . $msg : '.'));
     }
-    return ['status'=>$status,'body'=>$body,'contentType'=>$contentType,'redirectUrl'=>$redirectUrl];
+    $decoded = json_decode($body, true);
+    if (!is_array($decoded)) throw new RuntimeException('Brain Splatter did not return JSON.');
+    return ['status'=>$status,'data'=>$decoded,'contentType'=>$contentType];
 }
 
-function brain_test_intake(array $config): array {
-    $url = trim((string)($config['intakeUrl'] ?? ''));
-    // Use GET, not POST, so this does not create an intake item. Do not follow redirects:
-    // a redirect is itself enough to prove the configured endpoint responded, and following
-    // it can mask the real route with an unrelated Cloudflare/custom-domain error page.
-    $result = brain_request($config, $url, 'GET', false, false, 'intake');
-    $status = (int)$result['status'];
-    $redirect = trim((string)($result['redirectUrl'] ?? ''));
-    // For a write-only intake route, 400/401/403/405 are expected and prove the route exists.
-    // Any 2xx/3xx response also proves reachability. Only 404 and 5xx are treated as failures.
-    if (($status >= 200 && $status < 400) || in_array($status, [400,401,403,405,422], true)) {
-        return ['ok'=>true,'status'=>$status,'reachable'=>true,'redirect'=>$redirect ?: null];
-    }
-    throw new RuntimeException('Brain Splatter intake endpoint returned HTTP ' . $status . '.');
+function brain_projects_url(array $config): string {
+    $endpoint = trim((string)($config['endpointUrl'] ?? ''));
+    $userId = trim((string)($config['userId'] ?? ''));
+    if ($endpoint === '') throw new RuntimeException('Brain Splatter endpoint is not configured.');
+    if ($userId === '') throw new RuntimeException('Brain Splatter User ID is not configured.');
+    $base = brain_base_url($endpoint);
+    return rtrim($base, '/') . '/api/portfolio/projects?user_id=' . rawurlencode($userId);
 }
 
-function brain_http(array $config): array {
-    $url = trim((string)($config['syncUrl'] ?? ''));
-    if ($url === '') throw new RuntimeException('Sync endpoint not configured. Add a Brain Splatter read/GET endpoint before using Sync Now.');
-    return brain_request($config, $url, 'GET', true);
-}
-
-function brain_items(array $payload): array {
-    if (array_is_list($payload)) return $payload;
-    foreach (['projects','items','data','results','published','recipes','proposals'] as $key) {
-        if (isset($payload[$key]) && is_array($payload[$key])) {
-            $candidate = $payload[$key];
-            if ($key === 'data' && !array_is_list($candidate)) {
-                foreach (['projects','items','results','published','recipes','proposals'] as $nested) if (isset($candidate[$nested]) && is_array($candidate[$nested])) return $candidate[$nested];
-            }
-            if (array_is_list($candidate)) return $candidate;
-        }
+function brain_fetch_projects(array $config): array {
+    $response = brain_request($config, brain_projects_url($config));
+    $payload = $response['data'];
+    if (isset($payload['success']) && !$payload['success']) {
+        throw new RuntimeException((string)($payload['error'] ?? $payload['message'] ?? 'Brain Splatter project request failed.'));
     }
-    throw new RuntimeException('Brain Splatter response does not contain a project list.');
+    $items = $payload['projects'] ?? null;
+    if (!is_array($items)) throw new RuntimeException('Brain Splatter response does not contain a projects list.');
+    return ['status'=>$response['status'],'items'=>$items];
 }
 
 function brain_pick(array $item, array $keys, mixed $default=''): mixed {
@@ -368,7 +373,7 @@ function brain_project(array $item, int $index): array {
     $title = trim((string)brain_pick($item, ['title','name','projectName','project_name','recipeName','proposalName'], 'Brain Splatter Project'));
     $desc = (string)brain_pick($item, ['description','details','body','content','summary','proposal','recipe'], '');
     $short = (string)brain_pick($item, ['shortDescription','short_description','summary','subtitle'], '');
-    if ($short === '') $short = mb_substr(trim(strip_tags($desc)), 0, 180);
+    if ($short === '') { $plain = trim(strip_tags($desc)); $short = function_exists('mb_substr') ? mb_substr($plain, 0, 180) : substr($plain, 0, 180); }
     $categoryRaw = strtolower((string)brain_pick($item, ['category','type','projectType'], 'research'));
     $allowed = ['hardware','software','systems','tools','research'];
     $category = in_array($categoryRaw, $allowed, true) ? $categoryRaw : (str_contains($categoryRaw,'soft')?'software':(str_contains($categoryRaw,'hard')?'hardware':'research'));
@@ -406,8 +411,8 @@ function brain_project(array $item, int $index): array {
 
 function brain_sync_projects(array &$config): array {
     global $PROJECTS_FILE;
-    $response=brain_http($config);
-    $items=brain_items($response['data']);
+    $response=brain_fetch_projects($config);
+    $items=$response['items'];
     $projects=read_json_file($PROJECTS_FILE, []);
     if (!is_array($projects)) $projects=[];
     $imported=0; $updated=0; $skipped=0;
@@ -459,7 +464,7 @@ try {
             'name'=>'Splatter Innovations API',
             'version'=>VERSION,
             'runtime'=>'php',
-            'endpoints'=>['health','meta','projects','bio','settings','auth/session','auth/login','admin/brain-splatter','admin/brain-splatter/test-intake','admin/brain-splatter/test-sync','admin/brain-splatter/sync']
+            'endpoints'=>['health','meta','projects','bio','settings','auth/session','auth/login','admin/brain-splatter','admin/brain-splatter/test','admin/brain-splatter/sync']
         ]);
     }
 
@@ -474,53 +479,31 @@ try {
         require_auth();
         $existing = brain_normalize_config(read_json_file($BRAIN_FILE, []));
         $b = request_body();
-        if (array_key_exists('intakeUrl', $b)) $existing['intakeUrl'] = trim((string)$b['intakeUrl']);
-        if (array_key_exists('syncUrl', $b)) $existing['syncUrl'] = trim((string)$b['syncUrl']);
-        if (array_key_exists('authMode', $b)) $existing['authMode'] = in_array((string)$b['authMode'], ['bearer','x-api-key','token'], true) ? (string)$b['authMode'] : 'bearer';
+        if (array_key_exists('endpointUrl', $b)) $existing['endpointUrl'] = trim((string)$b['endpointUrl']);
+        if (array_key_exists('userId', $b)) $existing['userId'] = trim((string)$b['userId']);
         if (array_key_exists('importNewOnly', $b)) $existing['importNewOnly'] = (bool)$b['importNewOnly'];
         if (isset($b['token']) && trim((string)$b['token']) !== '') $existing['token'] = trim((string)$b['token']);
         if (!empty($b['clearToken'])) $existing['token'] = '';
-        if ($existing['syncUrl'] === '') $existing['syncStatus'] = 'not-configured';
+        $existing['status'] = (trim((string)$existing['endpointUrl']) !== '' && trim((string)$existing['userId']) !== '') ? 'configured' : 'not-configured';
         brain_log($existing, 'config', 'Brain Splatter settings updated.');
         atomic_write_json($BRAIN_FILE, $existing);
         send_json(200, brain_public_config($existing));
     }
 
-    if ($route === 'admin/brain-splatter/test-intake' && $method === 'POST') {
+    if (in_array($route, ['admin/brain-splatter/test','admin/brain-splatter/test-intake','admin/brain-splatter/test-sync'], true) && $method === 'POST') {
         require_auth();
         $config = brain_normalize_config(read_json_file($BRAIN_FILE, []));
         try {
-            $result = brain_test_intake($config);
-            $config['intakeStatus'] = 'reachable';
-            $config['lastIntakeTestAt'] = gmdate('c');
-            brain_log($config, 'success', 'Intake endpoint is reachable.', ['httpStatus'=>$result['status']]);
+            $response = brain_fetch_projects($config);
+            $config['status'] = 'connected';
+            $config['lastTestAt'] = gmdate('c');
+            brain_log($config, 'success', 'Brain Splatter connection test successful.', ['received'=>count($response['items'])]);
             atomic_write_json($BRAIN_FILE, $config);
-            send_json(200, ['ok'=>true,'result'=>$result,'config'=>brain_public_config($config)]);
+            send_json(200, ['ok'=>true,'status'=>'connected','received'=>count($response['items']),'config'=>brain_public_config($config)]);
         } catch (Throwable $e) {
-            $config['intakeStatus'] = 'error';
-            $config['lastIntakeTestAt'] = gmdate('c');
-            brain_log($config, 'error', 'Intake test failed: ' . $e->getMessage());
-            atomic_write_json($BRAIN_FILE, $config);
-            send_json(502, ['error'=>$e->getMessage(),'config'=>brain_public_config($config)]);
-        }
-    }
-
-    if (($route === 'admin/brain-splatter/test-sync' || $route === 'admin/brain-splatter/test') && $method === 'POST') {
-        require_auth();
-        $config = brain_normalize_config(read_json_file($BRAIN_FILE, []));
-        if (trim((string)$config['syncUrl']) === '') send_json(409, ['error'=>'Sync endpoint not configured. Add a Brain Splatter read/GET endpoint before testing sync.','config'=>brain_public_config($config)]);
-        try {
-            $response = brain_http($config);
-            $items = brain_items($response['data']);
-            $config['syncStatus'] = 'connected';
-            $config['lastSyncTestAt'] = gmdate('c');
-            brain_log($config, 'success', 'Sync endpoint test successful.', ['received'=>count($items)]);
-            atomic_write_json($BRAIN_FILE, $config);
-            send_json(200, ['ok'=>true,'status'=>'connected','received'=>count($items),'config'=>brain_public_config($config)]);
-        } catch (Throwable $e) {
-            $config['syncStatus'] = 'error';
-            $config['lastSyncTestAt'] = gmdate('c');
-            brain_log($config, 'error', 'Sync endpoint test failed: ' . $e->getMessage());
+            $config['status'] = 'error';
+            $config['lastTestAt'] = gmdate('c');
+            brain_log($config, 'error', 'Connection test failed: ' . $e->getMessage());
             atomic_write_json($BRAIN_FILE, $config);
             send_json(502, ['error'=>$e->getMessage(),'config'=>brain_public_config($config)]);
         }
@@ -529,17 +512,16 @@ try {
     if ($route === 'admin/brain-splatter/sync' && $method === 'POST') {
         require_auth();
         $config = brain_normalize_config(read_json_file($BRAIN_FILE, []));
-        if (trim((string)$config['syncUrl']) === '') send_json(409, ['error'=>'Sync endpoint not configured. Add a Brain Splatter read/GET endpoint before using Sync Now.','config'=>brain_public_config($config)]);
         try {
             $result = brain_sync_projects($config);
-            $config['syncStatus'] = 'connected';
+            $config['status'] = 'connected';
             $config['lastSyncAt'] = gmdate('c');
             $config['lastSync'] = $result;
-            brain_log($config, 'sync', 'Manual sync completed.', $result);
+            brain_log($config, 'sync', 'Manual Brain Splatter sync completed.', $result);
             atomic_write_json($BRAIN_FILE, $config);
             send_json(200, ['ok'=>true,'result'=>$result,'config'=>brain_public_config($config)]);
         } catch (Throwable $e) {
-            $config['syncStatus'] = 'error';
+            $config['status'] = 'error';
             brain_log($config, 'error', 'Sync failed: ' . $e->getMessage());
             atomic_write_json($BRAIN_FILE, $config);
             send_json(502, ['error'=>$e->getMessage(),'config'=>brain_public_config($config)]);
