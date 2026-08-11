@@ -282,19 +282,21 @@ function brain_headers(array $config): array {
     return $headers;
 }
 
-function brain_request(array $config, string $url, string $method='GET', bool $expectJson=false): array {
-    $url = brain_validate_url($url, strtolower($method)==='get' ? 'sync' : 'intake');
+function brain_request(array $config, string $url, string $method='GET', bool $expectJson=false, bool $followRedirects=true, string $purpose='auto'): array {
+    $validationPurpose = $purpose === 'auto' ? (strtolower($method)==='get' && $expectJson ? 'sync' : 'intake') : $purpose;
+    $url = brain_validate_url($url, $validationPurpose);
     $headers = brain_headers($config);
-    $status = 0; $body = ''; $contentType = '';
+    $status = 0; $body = ''; $contentType = ''; $redirectUrl = '';
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
-        $opts=[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>true,CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,CURLOPT_HTTPHEADER=>$headers,CURLOPT_MAXREDIRS=>3,CURLOPT_CUSTOMREQUEST=>$method];
+        $opts=[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>$followRedirects,CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,CURLOPT_HTTPHEADER=>$headers,CURLOPT_MAXREDIRS=>3,CURLOPT_CUSTOMREQUEST=>$method];
         if ($method === 'HEAD') { $opts[CURLOPT_NOBODY]=true; }
         curl_setopt_array($ch, $opts);
         $raw = curl_exec($ch);
         if ($raw === false) { $err = curl_error($ch); curl_close($ch); throw new RuntimeException('Brain Splatter connection failed: ' . $err); }
         $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $contentType = (string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+        $redirectUrl = (string)curl_getinfo($ch, CURLINFO_REDIRECT_URL);
         $body = (string)$raw;
         curl_close($ch);
     } else {
@@ -317,16 +319,21 @@ function brain_request(array $config, string $url, string $method='GET', bool $e
         if (!is_array($decoded)) throw new RuntimeException('Brain Splatter sync endpoint did not return JSON.');
         return ['status'=>$status,'data'=>$decoded,'contentType'=>$contentType];
     }
-    return ['status'=>$status,'body'=>$body,'contentType'=>$contentType];
+    return ['status'=>$status,'body'=>$body,'contentType'=>$contentType,'redirectUrl'=>$redirectUrl];
 }
 
 function brain_test_intake(array $config): array {
     $url = trim((string)($config['intakeUrl'] ?? ''));
-    $result = brain_request($config, $url, 'HEAD', false);
+    // Use GET, not POST, so this does not create an intake item. Do not follow redirects:
+    // a redirect is itself enough to prove the configured endpoint responded, and following
+    // it can mask the real route with an unrelated Cloudflare/custom-domain error page.
+    $result = brain_request($config, $url, 'GET', false, false, 'intake');
     $status = (int)$result['status'];
-    // 401/403 proves the protected endpoint exists; 405 proves the route exists but HEAD is not supported.
-    if (($status >= 200 && $status < 400) || in_array($status, [401,403,405], true)) {
-        return ['ok'=>true,'status'=>$status,'reachable'=>true];
+    $redirect = trim((string)($result['redirectUrl'] ?? ''));
+    // For a write-only intake route, 400/401/403/405 are expected and prove the route exists.
+    // Any 2xx/3xx response also proves reachability. Only 404 and 5xx are treated as failures.
+    if (($status >= 200 && $status < 400) || in_array($status, [400,401,403,405,422], true)) {
+        return ['ok'=>true,'status'=>$status,'reachable'=>true,'redirect'=>$redirect ?: null];
     }
     throw new RuntimeException('Brain Splatter intake endpoint returned HTTP ' . $status . '.');
 }
