@@ -1,4 +1,4 @@
-# Splatter Innovations v1.8.6 — GoDaddy PHP Edition
+# Splatter Innovations v1.8.7 — GoDaddy PHP Edition
 
 This release keeps the v1.8.0 public/admin interface and replaces the Node/Passenger backend with PHP + local JSON storage for standard cPanel hosting.
 
@@ -62,3 +62,11 @@ The Admin Dashboard includes a Brain Splatter Connection card with Configure, Te
 - Manual **Test Connection** reads `/api/portfolio/projects?user_id=...`.
 - Manual **Sync Now** pulls published Brain Splatter projects into the local Splatter JSON database.
 - Existing v1.8.3-v1.8.5 Brain Splatter settings are migrated automatically where possible.
+
+
+## v1.8.7 — Featured projects + GoDaddy-safe project uploads
+
+- Removed the four-project cap on the homepage. All published projects marked Featured now render in the responsive project grid.
+- Reduced client-side upload target to approximately 600 KB WebP with a 1500 px maximum dimension.
+- Added a final 800 KB safety ceiling before upload to reduce GoDaddy 413 responses.
+- Kept the PHP multipart upload API and existing Brain Splatter integration intact.

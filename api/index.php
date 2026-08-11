@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const VERSION = '1.8.6';
+const VERSION = '1.8.7';
 const MAX_JSON_BODY = 15728640; // 15 MB
 const MAX_IMAGE_BYTES = 8388608; // 8 MB server-side hard limit
 
@@ -292,7 +292,7 @@ function brain_validate_url(string $url): string {
 }
 
 function brain_headers(array $config): array {
-    $headers = ['Accept: application/json', 'User-Agent: Splatter-Innovations/1.8.6'];
+    $headers = ['Accept: application/json', 'User-Agent: Splatter-Innovations/1.8.7'];
     $token = trim((string)($config['token'] ?? ''));
     $mode = (string)($config['authMode'] ?? 'bearer');
     if ($token !== '') {
