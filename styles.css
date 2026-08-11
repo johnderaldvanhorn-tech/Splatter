@@ -292,3 +292,5 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9998;b
 .project-row{transition:transform .16s ease,border-color .16s ease,background .16s ease}.project-row:hover{transform:translateX(3px);background:rgba(255,255,255,.018)}
 
 @media(prefers-reduced-motion:reduce){#app::before,.edge-resync::after,.edge-resync .window-corners,.overlay.modal-visible .modal .detail,.overlay.modal-visible .modal .form-modal,.overlay.modal-visible .modal .login{animation:none!important}}
+
+button:disabled{opacity:.55;cursor:wait;filter:saturate(.45)}

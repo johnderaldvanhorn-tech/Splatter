@@ -1,9 +1,9 @@
 <?php
 declare(strict_types=1);
 
-const VERSION = '1.8.1';
+const VERSION = '1.8.2';
 const MAX_JSON_BODY = 15728640; // 15 MB
-const MAX_IMAGE_BYTES = 10485760; // 10 MB
+const MAX_IMAGE_BYTES = 8388608; // 8 MB server-side hard limit
 
 $ROOT = dirname(__DIR__);
 $DATA = $ROOT . '/data';
@@ -153,6 +153,53 @@ function save_data_url(string $dataUrl, string $kind): string {
     return '/uploads/' . $dir . '/' . $name;
 }
 
+function save_multipart_upload(array $file, string $kind): string {
+    global $UPLOADS;
+    $error = (int)($file['error'] ?? UPLOAD_ERR_NO_FILE);
+    if ($error !== UPLOAD_ERR_OK) {
+        $messages = [
+            UPLOAD_ERR_INI_SIZE => 'Image exceeds the server upload limit.',
+            UPLOAD_ERR_FORM_SIZE => 'Image exceeds the form upload limit.',
+            UPLOAD_ERR_PARTIAL => 'Image upload was interrupted.',
+            UPLOAD_ERR_NO_FILE => 'No image was received.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Server upload directory is unavailable.',
+            UPLOAD_ERR_CANT_WRITE => 'Server could not write the uploaded image.',
+            UPLOAD_ERR_EXTENSION => 'Server rejected the uploaded image.'
+        ];
+        throw new RuntimeException($messages[$error] ?? 'Image upload failed.');
+    }
+    $size = (int)($file['size'] ?? 0);
+    if ($size <= 0) throw new RuntimeException('Uploaded image is empty.');
+    if ($size > MAX_IMAGE_BYTES) throw new RuntimeException('Image exceeds 8 MB.');
+    $tmp = (string)($file['tmp_name'] ?? '');
+    if ($tmp === '' || !is_uploaded_file($tmp)) throw new RuntimeException('Invalid uploaded file.');
+
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = (string)$finfo->file($tmp);
+    $exts = ['image/png'=>'png','image/jpeg'=>'jpg','image/webp'=>'webp','image/gif'=>'gif'];
+    if (!isset($exts[$mime])) throw new RuntimeException('Unsupported image format. Use PNG, JPG, WebP or GIF.');
+
+    $dir = $kind === 'bio' ? 'bio' : 'projects';
+    $name = time() . '-' . bin2hex(random_bytes(5)) . '.' . $exts[$mime];
+    $destination = $UPLOADS . '/' . $dir . '/' . $name;
+    if (!move_uploaded_file($tmp, $destination)) throw new RuntimeException('Unable to save uploaded image.');
+    @chmod($destination, 0644);
+    return '/uploads/' . $dir . '/' . $name;
+}
+
+function parse_ini_bytes(string $value): int {
+    $value = trim($value);
+    if ($value === '') return 0;
+    $last = strtolower($value[strlen($value)-1]);
+    $num = (float)$value;
+    return match ($last) {
+        'g' => (int)($num * 1024 * 1024 * 1024),
+        'm' => (int)($num * 1024 * 1024),
+        'k' => (int)($num * 1024),
+        default => (int)$num,
+    };
+}
+
 function settings_default(): array {
     return ['siteName'=>'Splatter Innovations','tagline'=>'Splatter. Storm and Bake.','established'=>'2024','storageMode'=>'local-json-php'];
 }
@@ -163,6 +210,33 @@ $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 try {
     if ($route === 'health' && $method === 'GET') {
         send_json(200, ['ok'=>true,'version'=>VERSION,'runtime'=>'php','time'=>gmdate('c')]);
+    }
+
+    if ($route === 'meta' && $method === 'GET') {
+        send_json(200, [
+            'name'=>'Splatter Innovations API',
+            'version'=>VERSION,
+            'runtime'=>'php',
+            'endpoints'=>['health','meta','projects','bio','settings','auth/session','auth/login']
+        ]);
+    }
+
+    if ($route === 'admin/system' && $method === 'GET') {
+        require_auth();
+        send_json(200, [
+            'version'=>VERSION,
+            'runtime'=>'php',
+            'phpVersion'=>PHP_VERSION,
+            'uploadMaxFilesize'=>ini_get('upload_max_filesize'),
+            'postMaxSize'=>ini_get('post_max_size'),
+            'uploadMaxBytes'=>parse_ini_bytes((string)ini_get('upload_max_filesize')),
+            'postMaxBytes'=>parse_ini_bytes((string)ini_get('post_max_size')),
+            'dataWritable'=>is_writable($DATA),
+            'backupsWritable'=>is_writable($BACKUPS),
+            'uploadsWritable'=>is_writable($UPLOADS),
+            'projectsWritable'=>is_writable($PROJECTS_FILE) || is_writable($DATA),
+            'bioWritable'=>is_writable($BIO_FILE) || is_writable($DATA),
+        ]);
     }
 
     if ($route === 'projects' && $method === 'GET') {
@@ -252,9 +326,13 @@ try {
 
     if ($route === 'admin/uploads' && $method === 'POST') {
         require_auth();
-        $b = request_body();
         $kind = (string)($_GET['kind'] ?? 'projects');
-        send_json(201, ['url'=>save_data_url((string)($b['dataUrl'] ?? ''), $kind)]);
+        if (isset($_FILES['file']) && is_array($_FILES['file'])) {
+            send_json(201, ['url'=>save_multipart_upload($_FILES['file'], $kind), 'mode'=>'multipart']);
+        }
+        // Backward-compatible JSON/data URL upload for older clients.
+        $b = request_body();
+        send_json(201, ['url'=>save_data_url((string)($b['dataUrl'] ?? ''), $kind), 'mode'=>'data-url']);
     }
 
     if ($route === 'admin/projects' && $method === 'POST') {
