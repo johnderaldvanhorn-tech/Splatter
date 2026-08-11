@@ -7,3 +7,9 @@ uploads/*
 !uploads/projects/
 !uploads/bio/
 data/users.json
+
+# Runtime/private files
+.splatter.pid
+data/.session-secret
+data/users.json
+public/uploads/
