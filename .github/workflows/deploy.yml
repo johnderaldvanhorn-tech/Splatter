@@ -1,0 +1,165 @@
+name: Deploy Splatter to GoDaddy
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare deployment package
+        run: |
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='logs' \
+            --exclude='backups' \
+            --exclude='.splatter.pid' \
+            --exclude='data/.session-secret' \
+            --exclude='data/users.json' \
+            --exclude='public/uploads' \
+            -czf splatter-deploy.tar.gz .
+
+      - name: Upload deployment package
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.GODADDY_HOST }}
+          username: ${{ secrets.GODADDY_USERNAME }}
+          password: ${{ secrets.GODADDY_PASSWORD }}
+          source: splatter-deploy.tar.gz
+          target: /home/${{ secrets.GODADDY_USERNAME }}/
+
+      - name: Deploy and restart Passenger
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.GODADDY_HOST }}
+          username: ${{ secrets.GODADDY_USERNAME }}
+          password: ${{ secrets.GODADDY_PASSWORD }}
+          script: |
+            set -e
+
+            APP="$HOME/splatter-app"
+            PACKAGE="$HOME/splatter-deploy.tar.gz"
+            BACKUP="$HOME/splatter-backups/$(date +%Y%m%d-%H%M%S)"
+
+            echo "Creating directories..."
+            mkdir -p "$APP"
+            mkdir -p "$HOME/splatter-backups"
+
+            echo "Backing up current application..."
+            if [ -f "$APP/package.json" ]; then
+              mkdir -p "$BACKUP"
+
+              cp -R "$APP" "$BACKUP/app"
+            fi
+
+            echo "Preserving live project data..."
+            mkdir -p "$HOME/splatter-persistent"
+
+            if [ -f "$APP/data/projects.json" ]; then
+              cp "$APP/data/projects.json" \
+                 "$HOME/splatter-persistent/projects.json"
+            fi
+
+            if [ -f "$APP/data/bio.json" ]; then
+              cp "$APP/data/bio.json" \
+                 "$HOME/splatter-persistent/bio.json"
+            fi
+
+            if [ -f "$APP/data/settings.json" ]; then
+              cp "$APP/data/settings.json" \
+                 "$HOME/splatter-persistent/settings.json"
+            fi
+
+            if [ -f "$APP/data/users.json" ]; then
+              cp "$APP/data/users.json" \
+                 "$HOME/splatter-persistent/users.json"
+            fi
+
+            if [ -f "$APP/data/.session-secret" ]; then
+              cp "$APP/data/.session-secret" \
+                 "$HOME/splatter-persistent/.session-secret"
+            fi
+
+            if [ -d "$APP/public/uploads" ]; then
+              rm -rf "$HOME/splatter-persistent/uploads"
+              cp -R "$APP/public/uploads" \
+                 "$HOME/splatter-persistent/uploads"
+            fi
+
+            echo "Removing previous application code..."
+
+            find "$APP" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              ! -name data \
+              ! -name public \
+              -exec rm -rf {} +
+
+            if [ -d "$APP/public" ]; then
+              find "$APP/public" \
+                -mindepth 1 \
+                -maxdepth 1 \
+                ! -name uploads \
+                -exec rm -rf {} +
+            fi
+
+            echo "Extracting new build..."
+            tar -xzf "$PACKAGE" -C "$APP"
+
+            echo "Restoring live data..."
+            mkdir -p "$APP/data"
+
+            if [ -f "$HOME/splatter-persistent/projects.json" ]; then
+              cp "$HOME/splatter-persistent/projects.json" \
+                 "$APP/data/projects.json"
+            fi
+
+            if [ -f "$HOME/splatter-persistent/bio.json" ]; then
+              cp "$HOME/splatter-persistent/bio.json" \
+                 "$APP/data/bio.json"
+            fi
+
+            if [ -f "$HOME/splatter-persistent/settings.json" ]; then
+              cp "$HOME/splatter-persistent/settings.json" \
+                 "$APP/data/settings.json"
+            fi
+
+            if [ -f "$HOME/splatter-persistent/users.json" ]; then
+              cp "$HOME/splatter-persistent/users.json" \
+                 "$APP/data/users.json"
+            fi
+
+            if [ -f "$HOME/splatter-persistent/.session-secret" ]; then
+              cp "$HOME/splatter-persistent/.session-secret" \
+                 "$APP/data/.session-secret"
+            fi
+
+            if [ -d "$HOME/splatter-persistent/uploads" ]; then
+              rm -rf "$APP/public/uploads"
+              cp -R "$HOME/splatter-persistent/uploads" \
+                 "$APP/public/uploads"
+            fi
+
+            cd "$APP"
+
+            echo "Installing dependencies..."
+            npm ci --omit=dev
+
+            echo "Restarting Passenger..."
+            mkdir -p tmp
+            touch tmp/restart.txt
+
+            echo "Cleaning deployment package..."
+            rm -f "$PACKAGE"
+
+            echo "Splatter deployment complete."
