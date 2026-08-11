@@ -36,7 +36,7 @@ jobs:
         with:
           host: ${{ secrets.GODADDY_HOST }}
           username: ${{ secrets.GODADDY_USERNAME }}
-          password: ${{ secrets.GODADDY_PASSWORD }}
+          key: ${{ secrets.GODADDY_SSH_KEY }}
           source: splatter-deploy.tar.gz
           target: /home/${{ secrets.GODADDY_USERNAME }}/
 
@@ -45,7 +45,7 @@ jobs:
         with:
           host: ${{ secrets.GODADDY_HOST }}
           username: ${{ secrets.GODADDY_USERNAME }}
-          password: ${{ secrets.GODADDY_PASSWORD }}
+          key: ${{ secrets.GODADDY_SSH_KEY }}
           script: |
             set -e
 
