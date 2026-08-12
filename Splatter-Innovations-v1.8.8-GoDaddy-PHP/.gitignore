@@ -1,0 +1,11 @@
+.DS_Store
+*.log
+splatter-php-deploy.tar.gz
+backups/*
+!backups/.htaccess
+uploads/*
+!uploads/projects/
+!uploads/bio/
+data/users.json
+
+data/brain-splatter.json

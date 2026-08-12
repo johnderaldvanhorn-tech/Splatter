@@ -1,0 +1,179 @@
+name: Deploy Splatter PHP to GoDaddy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: Splatter
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate deployment secrets
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+          GODADDY_SSH_KEY: ${{ secrets.GODADDY_SSH_KEY }}
+        run: |
+          set -e
+          [ -n "$GODADDY_HOST" ] || { echo "ERROR: GODADDY_HOST is missing"; exit 1; }
+          [ -n "$GODADDY_USERNAME" ] || { echo "ERROR: GODADDY_USERNAME is missing"; exit 1; }
+          [ -n "$GODADDY_SSH_KEY" ] || { echo "ERROR: GODADDY_SSH_KEY is missing"; exit 1; }
+          echo "GoDaddy deployment secrets are available."
+
+      - name: Configure SSH
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_SSH_KEY: ${{ secrets.GODADDY_SSH_KEY }}
+        run: |
+          set -e
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$GODADDY_SSH_KEY" > "$HOME/.ssh/splatter_godaddy"
+          chmod 600 "$HOME/.ssh/splatter_godaddy"
+          ssh-keyscan -H "$GODADDY_HOST" >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Test SSH connection
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+        run: |
+          set -e
+          ssh -i "$HOME/.ssh/splatter_godaddy" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$GODADDY_USERNAME@$GODADDY_HOST" \
+            'echo "SSH connection successful."'
+
+      - name: Prepare PHP deployment package
+        shell: bash
+        run: |
+          set -e
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='backups' \
+            --exclude='uploads' \
+            --exclude='data/users.json' \
+            --exclude='*.command' \
+            --exclude='router.php' \
+            -czf /tmp/splatter-php-deploy.tar.gz .
+          mv /tmp/splatter-php-deploy.tar.gz ./splatter-php-deploy.tar.gz
+          echo "Deployment package created:"
+          ls -lh splatter-php-deploy.tar.gz
+
+      - name: Upload deployment package
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+        run: |
+          set -e
+          scp \
+            -i "$HOME/.ssh/splatter_godaddy" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=30 \
+            splatter-php-deploy.tar.gz \
+            "$GODADDY_USERNAME@$GODADDY_HOST:/home/$GODADDY_USERNAME/splatter-php-deploy.tar.gz"
+
+      - name: Deploy PHP site
+        shell: bash
+        env:
+          GODADDY_HOST: ${{ secrets.GODADDY_HOST }}
+          GODADDY_USERNAME: ${{ secrets.GODADDY_USERNAME }}
+        run: |
+          set -e
+
+          ssh \
+            -i "$HOME/.ssh/splatter_godaddy" \
+            -o BatchMode=yes \
+            "$GODADDY_USERNAME@$GODADDY_HOST" 'bash -s' <<'REMOTE'
+          set -e
+
+          SITE="$HOME/public_html"
+          PACKAGE="$HOME/splatter-php-deploy.tar.gz"
+          BACKUP_ROOT="$HOME/splatter-site-backups"
+          BACKUP="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
+          PERSIST="$HOME/splatter-persistent"
+
+          echo "=== Splatter PHP Deployment ==="
+          echo "Site: $SITE"
+
+          [ -f "$PACKAGE" ] || { echo "ERROR: deployment package missing"; exit 1; }
+
+          mkdir -p "$SITE" "$BACKUP_ROOT" "$PERSIST"
+
+          echo "Checking PHP runtime..."
+          php -v | head -1
+
+          echo "Backing up current public site..."
+          mkdir -p "$BACKUP"
+          cp -a "$SITE/." "$BACKUP/"
+
+          echo "Preserving live Splatter data..."
+          if [ -d "$SITE/data" ]; then
+            rm -rf "$PERSIST/data"
+            cp -a "$SITE/data" "$PERSIST/data"
+          fi
+          if [ -d "$SITE/uploads" ]; then
+            rm -rf "$PERSIST/uploads"
+            cp -a "$SITE/uploads" "$PERSIST/uploads"
+          fi
+
+          echo "Removing previous root website files..."
+          # Preserve cPanel/SSL and known sub-sites while replacing the root website.
+          find "$SITE" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            ! -name '.well-known' \
+            ! -name 'cgi-bin' \
+            ! -name 'focus' \
+            -exec rm -rf {} +
+
+          echo "Extracting Splatter PHP release..."
+          tar -xzf "$PACKAGE" -C "$SITE"
+
+          echo "Restoring persistent project data and uploads..."
+          if [ -d "$PERSIST/data" ]; then
+            rm -rf "$SITE/data"
+            cp -a "$PERSIST/data" "$SITE/data"
+          fi
+          if [ -d "$PERSIST/uploads" ]; then
+            rm -rf "$SITE/uploads"
+            cp -a "$PERSIST/uploads" "$SITE/uploads"
+          fi
+
+          mkdir -p "$SITE/data" "$SITE/backups" "$SITE/uploads/projects" "$SITE/uploads/bio"
+          chmod 755 "$SITE/api" "$SITE/data" "$SITE/backups" "$SITE/uploads" "$SITE/uploads/projects" "$SITE/uploads/bio" || true
+          chmod 644 "$SITE/data"/*.json 2>/dev/null || true
+
+          echo "Validating PHP API..."
+          php -l "$SITE/api/index.php"
+
+          echo "Cleaning deployment package..."
+          rm -f "$PACKAGE"
+
+          echo "Deployment completed successfully."
+          echo "Backup: $BACKUP"
+          REMOTE
+
+      - name: Verify live site
+        shell: bash
+        run: |
+          set -e
+          sleep 2
+          curl --fail --silent --show-error --max-time 20 \
+            https://splatterin.com/api/health
+          echo
+          echo "Splatter live health check passed."

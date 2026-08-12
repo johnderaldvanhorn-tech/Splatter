@@ -1,0 +1,23 @@
+Options -Indexes
+DirectoryIndex index.html
+
+<IfModule mod_rewrite.c>
+RewriteEngine On
+
+# Preserve ACME / SSL validation paths.
+RewriteRule ^\.well-known/ - [L]
+
+# Route the Splatter JSON API to PHP.
+RewriteRule ^api(?:/(.*))?$ api/index.php?route=$1 [QSA,L]
+
+# SPA fallback for clean client-side navigation.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+Header always set X-Content-Type-Options "nosniff"
+Header always set Referrer-Policy "no-referrer"
+Header always set X-Frame-Options "SAMEORIGIN"
+</IfModule>

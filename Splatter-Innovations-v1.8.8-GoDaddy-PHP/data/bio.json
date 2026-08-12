@@ -1,0 +1,21 @@
+{
+  "headline": ["Engineer.", "Builder.", "Problem Solver."],
+  "intro": "I turn complex challenges into smart, reliable technology that makes a real impact.",
+  "biography": "I'm John Van Horn, an engineer and entrepreneur with a passion for building products and systems that solve real problems. From embedded hardware to full-stack software, I thrive at the intersection of innovation, design, and execution.",
+  "portrait": "/assets/splatter-logo.png",
+  "metrics": {
+    "yearsExperience": "20+",
+    "productsBuilt": "50+",
+    "systemsDeployed": "100+",
+    "mission": "ONE"
+  },
+  "values": {
+    "curiosity": "I ask questions, explore deeply, and never stop learning.",
+    "focus": "I zero in on what matters and execute with discipline.",
+    "impact": "I build solutions that improve lives and create value.",
+    "integrity": "I do the right thing and build trust in everything I do."
+  },
+  "mission": "To build intelligent solutions that solve real problems, empower people, and push technology forward.",
+  "quote": "Ideas are easy. Execution changes everything.",
+  "footerTagline": "Small lab. Big ideas."
+}
