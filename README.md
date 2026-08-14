@@ -1,4 +1,4 @@
-# Splatter Innovations v1.8.8 — GoDaddy PHP Edition
+# Splatter Innovations v1.8.10 — GoDaddy PHP Edition
 
 This release keeps the v1.8.0 public/admin interface and replaces the Node/Passenger backend with PHP + local JSON storage for standard cPanel hosting.
 
@@ -72,8 +72,21 @@ The Admin Dashboard includes a Brain Splatter Connection card with Configure, Te
 - Kept the PHP multipart upload API and existing Brain Splatter integration intact.
 
 
-## v1.8.8 — Category color restoration + lab year
+## v1.8.9 — Category color restoration + lab year
 - Restores category-driven project accents: Hardware magenta, Software cyan, Systems yellow, Tools white, Research orange.
 - Project IDs, status badges, category labels, tags, hover states, media buttons, project detail accents, and admin status tags inherit the category color automatically.
 - Homepage filter colors follow the same category language.
 - Changes the lab metric from `2024 / Lab Online` to `2011 / Lab Started`.
+
+## v1.8.9 — Chunked image uploads
+
+Images are now uploaded in ~160 KB chunks so GoDaddy/Cloudflare request-size limits cannot reject the full file before PHP receives it. Existing multipart upload remains available for backward compatibility.
+
+
+## v1.8.10 — Lightweight project saves + legacy image migration
+
+- Project edits no longer echo an existing hero image back in the JSON update request.
+- Existing images are preserved server-side when no replacement is selected.
+- Legacy `data:image/...;base64,...` hero/gallery images are migrated into `/uploads/projects/` during authenticated project reads or project saves.
+- Chunked image uploads from v1.8.9 remain enabled for replacement images.
+- This removes the large JSON request path that could trigger GoDaddy HTTP 413 responses when toggling Featured or editing metadata.

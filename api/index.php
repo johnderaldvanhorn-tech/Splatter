@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const VERSION = '1.8.7';
+const VERSION = '1.8.10';
 const MAX_JSON_BODY = 15728640; // 15 MB
 const MAX_IMAGE_BYTES = 8388608; // 8 MB server-side hard limit
 
@@ -15,7 +15,7 @@ $SETTINGS_FILE = $DATA . '/settings.json';
 $USERS_FILE = $DATA . '/users.json';
 $BRAIN_FILE = $DATA . '/brain-splatter.json';
 
-foreach ([$DATA, $BACKUPS, $UPLOADS, "$UPLOADS/projects", "$UPLOADS/bio"] as $dir) {
+foreach ([$DATA, $BACKUPS, $UPLOADS, "$UPLOADS/projects", "$UPLOADS/bio", "$UPLOADS/.chunks"] as $dir) {
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
 }
 
@@ -154,6 +154,34 @@ function save_data_url(string $dataUrl, string $kind): string {
     return '/uploads/' . $dir . '/' . $name;
 }
 
+
+function migrate_project_inline_images(array &$project): bool {
+    $changed = false;
+    $hero = (string)($project['heroImage'] ?? '');
+    if (str_starts_with($hero, 'data:image/')) {
+        $project['heroImage'] = save_data_url($hero, 'projects');
+        $changed = true;
+    }
+    if (isset($project['gallery']) && is_array($project['gallery'])) {
+        foreach ($project['gallery'] as $i => $image) {
+            if (is_string($image) && str_starts_with($image, 'data:image/')) {
+                $project['gallery'][$i] = save_data_url($image, 'projects');
+                $changed = true;
+            }
+        }
+    }
+    return $changed;
+}
+
+function migrate_project_collection_inline_images(array &$projects): bool {
+    $changed = false;
+    foreach ($projects as &$project) {
+        if (is_array($project) && migrate_project_inline_images($project)) $changed = true;
+    }
+    unset($project);
+    return $changed;
+}
+
 function save_multipart_upload(array $file, string $kind): string {
     global $UPLOADS;
     $error = (int)($file['error'] ?? UPLOAD_ERR_NO_FILE);
@@ -186,6 +214,66 @@ function save_multipart_upload(array $file, string $kind): string {
     if (!move_uploaded_file($tmp, $destination)) throw new RuntimeException('Unable to save uploaded image.');
     @chmod($destination, 0644);
     return '/uploads/' . $dir . '/' . $name;
+}
+
+function safe_upload_id(string $value): string {
+    $value = preg_replace('/[^a-zA-Z0-9_-]/', '', $value) ?? '';
+    if ($value === '' || strlen($value) > 100) throw new RuntimeException('Invalid upload session.');
+    return $value;
+}
+
+function save_chunk(array $body): array {
+    global $UPLOADS;
+    $id = safe_upload_id((string)($body['uploadId'] ?? ''));
+    $index = (int)($body['index'] ?? -1);
+    $total = (int)($body['total'] ?? 0);
+    if ($index < 0 || $total < 1 || $total > 100 || $index >= $total) throw new RuntimeException('Invalid upload chunk.');
+    $encoded = (string)($body['data'] ?? '');
+    if ($encoded === '' || strlen($encoded) > 400000) throw new RuntimeException('Upload chunk is too large.');
+    $binary = base64_decode($encoded, true);
+    if ($binary === false || strlen($binary) > 200000) throw new RuntimeException('Invalid upload chunk data.');
+    $dir = $UPLOADS . '/.chunks/' . $id;
+    if (!is_dir($dir) && !@mkdir($dir, 0755, true)) throw new RuntimeException('Unable to create upload session.');
+    $file = $dir . '/' . str_pad((string)$index, 4, '0', STR_PAD_LEFT) . '.part';
+    if (@file_put_contents($file, $binary, LOCK_EX) === false) throw new RuntimeException('Unable to save upload chunk.');
+    return ['ok'=>true,'index'=>$index,'total'=>$total];
+}
+
+function complete_chunk_upload(array $body): string {
+    global $UPLOADS;
+    $id = safe_upload_id((string)($body['uploadId'] ?? ''));
+    $total = (int)($body['total'] ?? 0);
+    $kind = (string)($body['kind'] ?? 'projects');
+    if ($total < 1 || $total > 100) throw new RuntimeException('Invalid upload session.');
+    $dir = $UPLOADS . '/.chunks/' . $id;
+    if (!is_dir($dir)) throw new RuntimeException('Upload session was not found.');
+    $tmp = $dir . '/assembled.bin';
+    $out = @fopen($tmp, 'wb');
+    if (!$out) throw new RuntimeException('Unable to assemble uploaded image.');
+    $size = 0;
+    try {
+        for ($i=0; $i<$total; $i++) {
+            $part = $dir . '/' . str_pad((string)$i, 4, '0', STR_PAD_LEFT) . '.part';
+            if (!is_file($part)) throw new RuntimeException('Upload is incomplete.');
+            $data = @file_get_contents($part);
+            if ($data === false) throw new RuntimeException('Unable to read upload chunk.');
+            $size += strlen($data);
+            if ($size > MAX_IMAGE_BYTES) throw new RuntimeException('Image exceeds 8 MB.');
+            fwrite($out, $data);
+        }
+    } finally { fclose($out); }
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = (string)$finfo->file($tmp);
+    $exts = ['image/png'=>'png','image/jpeg'=>'jpg','image/webp'=>'webp','image/gif'=>'gif'];
+    if (!isset($exts[$mime])) { @unlink($tmp); throw new RuntimeException('Unsupported image format. Use PNG, JPG, WebP or GIF.'); }
+    $targetDir = $kind === 'bio' ? 'bio' : 'projects';
+    $name = time() . '-' . bin2hex(random_bytes(5)) . '.' . $exts[$mime];
+    $destination = $UPLOADS . '/' . $targetDir . '/' . $name;
+    if (!@rename($tmp, $destination)) throw new RuntimeException('Unable to save uploaded image.');
+    @chmod($destination, 0644);
+    foreach (glob($dir . '/*') ?: [] as $f) @unlink($f);
+    @rmdir($dir);
+    return '/uploads/' . $targetDir . '/' . $name;
 }
 
 function parse_ini_bytes(string $value): int {
@@ -292,7 +380,7 @@ function brain_validate_url(string $url): string {
 }
 
 function brain_headers(array $config): array {
-    $headers = ['Accept: application/json', 'User-Agent: Splatter-Innovations/1.8.7'];
+    $headers = ['Accept: application/json', 'User-Agent: Splatter-Innovations/1.8.10'];
     $token = trim((string)($config['token'] ?? ''));
     $mode = (string)($config['authMode'] ?? 'bearer');
     if ($token !== '') {
@@ -549,6 +637,12 @@ try {
     if ($route === 'projects' && $method === 'GET') {
         $projects = read_json_file($PROJECTS_FILE, []);
         if (!is_array($projects)) $projects = [];
+        // Admin reads also clean up legacy Base64/data-URL images left by older builds.
+        // The migration writes the binary image once and replaces the large JSON value
+        // with a small /uploads/projects/... URL, preventing future 413 update requests.
+        if (authenticated_user() && migrate_project_collection_inline_images($projects)) {
+            atomic_write_json($PROJECTS_FILE, $projects);
+        }
         if (!authenticated_user()) $projects = array_values(array_filter($projects, fn($p) => !isset($p['published']) || $p['published'] !== false));
         usort($projects, fn($a,$b) => ((int)($a['displayOrder'] ?? 999)) <=> ((int)($b['displayOrder'] ?? 999)));
         send_json(200, $projects);
@@ -631,6 +725,17 @@ try {
         send_json(200, ['ok'=>true,'count'=>count($clean)]);
     }
 
+    if ($route === 'admin/uploads/chunk' && $method === 'POST') {
+        require_auth();
+        send_json(200, save_chunk(request_body()));
+    }
+
+    if ($route === 'admin/uploads/complete' && $method === 'POST') {
+        require_auth();
+        $b = request_body();
+        send_json(201, ['url'=>complete_chunk_upload($b), 'mode'=>'chunked']);
+    }
+
     if ($route === 'admin/uploads' && $method === 'POST') {
         require_auth();
         $kind = (string)($_GET['kind'] ?? 'projects');
@@ -672,6 +777,7 @@ try {
             'published'=>!array_key_exists('published', $b) || $b['published'] !== false,
             'displayOrder'=>(int)($b['displayOrder'] ?? (count($a)+1)),
         ];
+        migrate_project_inline_images($item);
         $a[] = $item;
         atomic_write_json($PROJECTS_FILE, $a);
         send_json(201, $item);
@@ -686,7 +792,11 @@ try {
         foreach ($a as $i => $p) if (($p['id'] ?? '') === $id) { $index = $i; break; }
         if ($index === null) send_json(404, ['error'=>'Project not found.']);
         if ($method === 'PUT') {
-            $a[$index] = array_merge($a[$index], request_body(), ['updatedAt'=>gmdate('c')]);
+            $changes = request_body();
+            // Never require the client to echo the existing hero image back. If no
+            // heroImage key is supplied, the existing server-side value is preserved.
+            $a[$index] = array_merge($a[$index], $changes, ['updatedAt'=>gmdate('c')]);
+            migrate_project_inline_images($a[$index]);
             atomic_write_json($PROJECTS_FILE, $a);
             send_json(200, $a[$index]);
         }
